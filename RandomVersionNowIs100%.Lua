@@ -787,7 +787,7 @@ local okSteal, errSteal = pcall(function()
 		{ id = "epic",      en = "epic",      label = "Epic",      color = Color3.fromRGB(176, 90, 255),  img = icon(123367448940620) },
 		{ id = "legendary", en = "legendary", label = "Legendary", color = Color3.fromRGB(255, 170, 40),  img = icon(78792108393649) },
 		{ id = "mythical",  en = "mythic",    label = "Mythic",    color = Color3.fromRGB(255, 80, 80),   img = icon(90056520665549) },
-		{ id = "cosmic",    en = "cosmic",    label = "Cosmic",    color = Color3.fromRGB(110, 100, 255), img = icon(5405285409) },
+		{ id = "cosmic",    en = "cosmic",    label = "Cosmic",    color = Color3.fromRGB(110, 100, 255), img = nil },
 		{ id = "secret",    en = "secret",    label = "Secret",    color = Color3.fromRGB(255, 50, 150),  img = icon(121324558664992) },
 		{ id = "eternal",   en = "eternal",   label = "Eternal",   color = Color3.fromRGB(0, 229, 255),   img = icon(133625388915961) },
 		{ id = "divine",    en = "divine",    label = "Divine",    color = Color3.fromRGB(255, 215, 0),   img = icon(96042806356330) },
@@ -1420,6 +1420,116 @@ local okSteal, errSteal = pcall(function()
 		S.floatOn = false
 		S.phase = "idle"
 		setStatus("AUTO OFF")
+	end
+
+	-- ================= HUD ATAS: KANDANG TERBAIK (tombol "-" / "Open") =================
+	do
+		local cam = workspace.CurrentCamera
+		local vpx = cam and cam.ViewportSize.X or 800
+		local hudScale = math.clamp((vpx - 16) / 380, 0.55, 1)
+		local HW, HH = 360, 58
+		local HUD_BG = Color3.fromRGB(120, 14, 0)
+		local HUD_EDGE = Color3.fromRGB(45, 8, 24)
+
+		local card = make("Frame", {
+			Name = "TopCard", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 6),
+			Size = UDim2.fromOffset(HW, HH), BackgroundColor3 = HUD_BG, BorderSizePixel = 0, ZIndex = 20,
+		}, gui)
+		corner(card, 8)
+		make("UIScale", { Scale = hudScale }, card)
+		make("UIStroke", { Color = HUD_EDGE, Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, card)
+
+		local hudIcon = make("ImageLabel", {
+			Position = UDim2.fromOffset(8, 7), Size = UDim2.fromOffset(44, 44),
+			BackgroundColor3 = C.OFF, BorderSizePixel = 0, Image = "", ScaleType = Enum.ScaleType.Fit, ZIndex = 21,
+		}, card)
+		corner(hudIcon, 8)
+		local hudLetter = make("TextLabel", {
+			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "?", TextColor3 = C.WHITE,
+			Font = Enum.Font.GothamBlack, TextSize = 22, ZIndex = 22,
+		}, hudIcon)
+
+		local function lbl(props)
+			props.BackgroundTransparency = 1
+			props.TextColor3 = C.WHITE
+			props.TextStrokeTransparency = 0
+			props.TextStrokeColor3 = C.BLACK
+			props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+			props.TextTruncate = Enum.TextTruncate.AtEnd
+			props.ZIndex = 21
+			return make("TextLabel", props, card)
+		end
+		local hudName = lbl({
+			Position = UDim2.fromOffset(60, 6), Size = UDim2.fromOffset(172, 22),
+			Text = "Belum ada kandang", Font = Enum.Font.GothamBlack, TextSize = 15,
+		})
+		local hudRar = lbl({
+			Position = UDim2.fromOffset(60, 30), Size = UDim2.fromOffset(172, 20),
+			Text = "rarity: - · ?/s", Font = Enum.Font.GothamBold, TextSize = 12,
+		})
+		local hudDist = lbl({
+			Position = UDim2.fromOffset(234, 20), Size = UDim2.fromOffset(100, 22),
+			Text = "in - Studs", Font = Enum.Font.GothamBlack, TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Right,
+		})
+
+		local minBtn = make("TextButton", {
+			AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -6, 0, 3), Size = UDim2.fromOffset(22, 20),
+			BackgroundTransparency = 1, Text = "-", TextColor3 = C.WHITE, Font = Enum.Font.GothamBlack,
+			TextSize = 20, ZIndex = 23, AutoButtonColor = false,
+		}, card)
+
+		local openBtn = make("TextButton", {
+			Name = "TopOpen", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 6),
+			Size = UDim2.fromOffset(86, 28), BackgroundColor3 = HUD_BG, BorderSizePixel = 0, Text = "Open",
+			TextColor3 = C.WHITE, Font = Enum.Font.GothamBlack, TextSize = 14, Visible = false, ZIndex = 20,
+			AutoButtonColor = false,
+		}, gui)
+		corner(openBtn, 8)
+		make("UIStroke", { Color = HUD_EDGE, Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, openBtn)
+		make("UIScale", { Scale = hudScale }, openBtn)
+
+		minBtn.Activated:Connect(function()
+			card.Visible = false
+			openBtn.Visible = true
+		end)
+		openBtn.Activated:Connect(function()
+			openBtn.Visible = false
+			card.Visible = true
+		end)
+
+		local lastE
+		task.spawn(function()
+			while S.alive do
+				local e = pickBest()
+				if e ~= lastE then
+					lastE = e
+					if e then
+						local r = e.rarityIdx and RARITIES[e.rarityIdx]
+						hudName.Text = (e.spooky and "Spooky " or "") .. e.name
+						hudIcon.BackgroundColor3 = r and r.color or C.OFF
+						hudIcon.Image = (r and r.img) or ""
+						hudLetter.Text = (r and r.img) and "" or (r and r.label:sub(1, 1) or "?")
+						hudRar.Text = string.format("rarity: %s · %s", r and r.label or "?",
+							e.income and (fmtNum(e.income) .. "/s") or "?/s")
+					else
+						hudName.Text = "Belum ada kandang"
+						hudIcon.BackgroundColor3 = C.OFF
+						hudIcon.Image = ""
+						hudLetter.Text = "?"
+						hudRar.Text = "rarity: - · ?/s"
+					end
+				end
+				local h = hrp()
+				if lastE and h and lastE.prompt.Parent then
+					local pos = promptPos(lastE.prompt) or lastE.pos
+					hudDist.Text = string.format("in %d Studs", math.floor((pos - h.Position).Magnitude))
+				else
+					hudDist.Text = "in - Studs"
+				end
+				task.wait(0.4)
+			end
+		end)
 	end
 
 	-- instant steal: ambil otomatis kalau dekat prompt
