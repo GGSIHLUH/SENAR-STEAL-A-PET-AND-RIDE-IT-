@@ -1,15 +1,754 @@
--- ====== SENAR HUB | STEAL SYSTEM + TAB SCANNER ======
--- Tempel di PALING BAWAH Senar.Lua (di bawah baris "TARUH KODE PROJECT KAMU DI BAWAH SINI").
--- Kalau kamu juga pakai Senar_Features.lua, tempel file ini SETELAHNYA (toggle lama tetap jalan).
---
--- Perubahan UI:
---   * Tab baru "Scanner" (pengaturan: metode, kecepatan, filter)
---   * Live Feed: tombol JOIN jadi STEAL + ikon per kelangkaan
---   * Tombol "Cancel Steal" di tab Logs
---   * Auto-Join diganti nama jadi "Auto-Steal"
---   * 2 metode gerak: TP (step teleport) dan Gerak Paksa (default 100 speed, bisa diubah)
+-- SENAR HUB | Steal a Pet and Ride It (UI + Scanner + Steal System)
+-- Tema: merah + balok atas/bawah + kilatan cahaya putih/hitam
+-- Floating icon (Asset ID) untuk buka/tutup
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ContentProvider = game:GetService("ContentProvider")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then return end
+
+-- ================= CONFIG =================
+local ICON_ASSET_ID = 94315198453864
+
+-- ================= CLEANUP =================
+local env = (getgenv and getgenv()) or _G
+if env.__SenarCleanup then pcall(env.__SenarCleanup) end
+
+-- ================= API PUBLIK =================
+local UI = {
+	onToggle = function(name, state) end,
+	onJoin = function(entry) end,
+	onCopy = function(entry) end,
+	onClear = function() end,
+	onKeySubmit = function(text) end,
+	addLog = function() end,
+	clearLogs = function() end,
+	setStatus = function() end,
+	destroy = function() end,
+}
+env.SenarUI = UI
+
+-- ================= WARNA =================
+local C = {
+	RED    = Color3.fromRGB(235, 35, 60),
+	RED_DK = Color3.fromRGB(110, 12, 26),
+	PINK   = Color3.fromRGB(255, 140, 190),
+	BG     = Color3.fromRGB(13, 8, 10),
+	SIDE   = Color3.fromRGB(8, 5, 6),
+	PANEL  = Color3.fromRGB(26, 15, 18),
+	HOVER  = Color3.fromRGB(44, 24, 29),
+	STROKE = Color3.fromRGB(100, 52, 60),
+	OFF    = Color3.fromRGB(55, 40, 44),
+	GRAY   = Color3.fromRGB(150, 132, 137),
+	WHITE  = Color3.fromRGB(255, 255, 255),
+	BLACK  = Color3.fromRGB(0, 0, 0),
+}
+
+-- ================= HELPER =================
+local function make(class, props, parent)
+	local obj = Instance.new(class)
+	for k, v in pairs(props) do obj[k] = v end
+	obj.Parent = parent
+	return obj
+end
+
+local function corner(o, r)
+	return make("UICorner", { CornerRadius = UDim.new(0, r) }, o)
+end
+
+local function randName(n)
+	local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	local t = table.create(n)
+	for i = 1, n do
+		local k = math.random(1, #chars)
+		t[i] = chars:sub(k, k)
+	end
+	return table.concat(t)
+end
+
+local tweens = {}
+local sweepGradients = {}
+
+local function sweepSeq(base, hi)
+	return ColorSequence.new({
+		ColorSequenceKeypoint.new(0, base),
+		ColorSequenceKeypoint.new(0.38, base),
+		ColorSequenceKeypoint.new(0.50, hi),
+		ColorSequenceKeypoint.new(0.62, base),
+		ColorSequenceKeypoint.new(1, base),
+	})
+end
+
+local function addSweep(inst, base, hi)
+	local g = make("UIGradient", { Color = sweepSeq(base, hi), Offset = Vector2.new(-1, 0) }, inst)
+	sweepGradients[g] = true
+	return g
+end
+
+-- garis tepi dengan kilatan putih yang menyapu
+local function glowStroke(obj, th, base)
+	local s = make("UIStroke", {
+		Color = C.WHITE, Thickness = th or 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, obj)
+	addSweep(s, base or C.STROKE, C.WHITE)
+	return s
+end
+
+-- garis tepi berputar: hitam / putih / merah
+local function spinStroke(parent, th)
+	local st = make("UIStroke", {
+		Color = C.WHITE, Thickness = th or 1.5,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, parent)
+	local g = make("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, C.BLACK),
+			ColorSequenceKeypoint.new(0.2, C.RED),
+			ColorSequenceKeypoint.new(0.35, C.WHITE),
+			ColorSequenceKeypoint.new(0.5, C.BLACK),
+			ColorSequenceKeypoint.new(0.7, C.RED_DK),
+			ColorSequenceKeypoint.new(0.85, C.WHITE),
+			ColorSequenceKeypoint.new(1, C.BLACK),
+		}),
+	}, st)
+	local tw = TweenService:Create(g,
+		TweenInfo.new(4, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1, false, 0),
+		{ Rotation = 360 })
+	tw:Play()
+	table.insert(tweens, tw)
+	return st
+end
+
+local function tween(obj, info, props)
+	local tw = TweenService:Create(obj, info, props)
+	tw:Play()
+	return tw
+end
+
+-- ================= GUI =================
+local gui = make("ScreenGui", {
+	Name = randName(14), ResetOnSpawn = false, DisplayOrder = 999,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+})
 
 do
+	local ok = pcall(function()
+		gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
+	end)
+	if not ok or not gui.Parent then
+		gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+	end
+end
+
+local conns = {}
+local myCleanup = function()
+	if gui and gui.Parent then gui:Destroy() end
+end
+env.__SenarCleanup = myCleanup
+UI.destroy = myCleanup
+
+-- driver kilatan (satu tween untuk semua gradien)
+local sweepVal = make("NumberValue", { Value = -1 }, gui)
+table.insert(conns, sweepVal.Changed:Connect(function(v)
+	local off = Vector2.new(v, 0)
+	for g in pairs(sweepGradients) do
+		if g.Parent then g.Offset = off else sweepGradients[g] = nil end
+	end
+end))
+do
+	local tw = TweenService:Create(sweepVal,
+		TweenInfo.new(2.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, false, 0),
+		{ Value = 1 })
+	tw:Play()
+	table.insert(tweens, tw)
+end
+
+local W, H = 470, 300
+
+-- holder (untuk posisi, drag, dan skala layar)
+local holder = make("Frame", {
+	Name = "Holder", AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(W, H),
+	BackgroundTransparency = 1,
+}, gui)
+local fitScale = make("UIScale", { Scale = 1 }, holder)
+
+local function updateFit()
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	local vp = cam.ViewportSize
+	fitScale.Scale = math.clamp(math.min(vp.X / (W + 30), vp.Y / (H + 30)), 0.45, 1)
+end
+updateFit()
+if workspace.CurrentCamera then
+	table.insert(conns, workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateFit))
+end
+
+-- window utama
+local main = make("Frame", {
+	Name = "Main", Size = UDim2.fromScale(1, 1),
+	AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+	BackgroundColor3 = C.BG, BorderSizePixel = 0, ClipsDescendants = true,
+}, holder)
+corner(main, 12)
+local popScale = make("UIScale", { Scale = 1 }, main)
+spinStroke(main, 1.5)
+
+-- ---------- Balok atas & bawah (background) ----------
+local blocks = {}
+do
+	local BW, GAP = 16, 4
+	local count = math.floor((W - 16) / (BW + GAP))
+	local rng = Random.new(7)
+	for i = 1, count do
+		local x = 8 + (i - 1) * (BW + GAP)
+		local col = C.RED_DK:Lerp(C.RED, rng:NextNumber())
+		local hTop = rng:NextInteger(7, 18)
+		local hBot = rng:NextInteger(7, 18)
+
+		local top = make("Frame", {
+			Position = UDim2.fromOffset(x, 0), Size = UDim2.fromOffset(BW, hTop),
+			BackgroundColor3 = col, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+		}, main)
+		local bot = make("Frame", {
+			AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromOffset(x, H),
+			Size = UDim2.fromOffset(BW, hBot),
+			BackgroundColor3 = col, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+		}, main)
+		table.insert(blocks, { frame = top, base = hTop, phase = rng:NextNumber() * 6.28 })
+		table.insert(blocks, { frame = bot, base = hBot, phase = rng:NextNumber() * 6.28 })
+	end
+	blocks.width = BW
+end
+
+-- ---------- Sidebar ----------
+local side = make("Frame", {
+	Position = UDim2.fromOffset(8, 24), Size = UDim2.fromOffset(124, 252),
+	BackgroundColor3 = C.SIDE, BackgroundTransparency = 0.12, BorderSizePixel = 0,
+}, main)
+corner(side, 10)
+glowStroke(side, 1)
+
+-- judul: Senar (Se merah, nar merah muda) + Hub (rainbow)
+local titleRow = make("Frame", {
+	Position = UDim2.fromOffset(10, 8), Size = UDim2.fromOffset(108, 24),
+	BackgroundTransparency = 1,
+}, side)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	Padding = UDim.new(0, 4), VerticalAlignment = Enum.VerticalAlignment.Center,
+}, titleRow)
+
+local senar = make("TextLabel", {
+	Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundTransparency = 1, Text = "Senar", TextColor3 = C.WHITE,
+	Font = Enum.Font.GothamBlack, TextSize = 18, LayoutOrder = 1,
+}, titleRow)
+make("UIGradient", {
+	Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, C.RED),
+		ColorSequenceKeypoint.new(0.40, C.RED),
+		ColorSequenceKeypoint.new(0.44, C.PINK),
+		ColorSequenceKeypoint.new(1, C.PINK),
+	}),
+}, senar)
+
+local hub = make("TextLabel", {
+	Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundTransparency = 1, Text = "Hub", TextColor3 = C.WHITE,
+	Font = Enum.Font.GothamBlack, TextSize = 18, LayoutOrder = 2,
+}, titleRow)
+local hubGrad = make("UIGradient", {}, hub)
+
+local function rainbowSeq(t)
+	local kps = {}
+	for i = 0, 6 do
+		kps[#kps + 1] = ColorSequenceKeypoint.new(i / 6, Color3.fromHSV((t * 0.25 + i / 6) % 1, 0.85, 1))
+	end
+	return ColorSequence.new(kps)
+end
+hubGrad.Color = rainbowSeq(0)
+
+-- status
+local dot = make("Frame", {
+	Position = UDim2.fromOffset(12, 40), Size = UDim2.fromOffset(6, 6),
+	BackgroundColor3 = C.WHITE, BorderSizePixel = 0,
+}, side)
+corner(dot, 3)
+local statusLbl = make("TextLabel", {
+	Position = UDim2.fromOffset(24, 34), Size = UDim2.new(1, -30, 0, 18),
+	BackgroundTransparency = 1, Text = "Connected", TextColor3 = C.GRAY,
+	Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+}, side)
+UI.setStatus = function(t)
+	statusLbl.Text = tostring(t)
+end
+
+-- ---------- Area konten & halaman ----------
+local content = make("Frame", {
+	Position = UDim2.fromOffset(140, 24), Size = UDim2.fromOffset(322, 252),
+	BackgroundTransparency = 1,
+}, main)
+
+local pages, tabBtns = {}, {}
+local tabNames = { "Logs", "Scanner", "History", "Settings", "System Key" }
+
+for _, name in ipairs(tabNames) do
+	pages[name] = make("Frame", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false,
+	}, content)
+end
+
+local function selectTab(name)
+	for n, p in pairs(pages) do p.Visible = (n == name) end
+	for n, t in pairs(tabBtns) do
+		local on = (n == name)
+		t.btn.BackgroundTransparency = on and 0.15 or 1
+		t.btn.TextColor3 = on and C.WHITE or C.GRAY
+		t.stroke.Enabled = on
+	end
+end
+
+for i, name in ipairs(tabNames) do
+	local b = make("TextButton", {
+		Position = UDim2.fromOffset(8, 58 + (i - 1) * 31), Size = UDim2.fromOffset(108, 27),
+		BackgroundColor3 = C.HOVER, BackgroundTransparency = 1, BorderSizePixel = 0,
+		Text = name, TextColor3 = C.GRAY, Font = Enum.Font.GothamBold, TextSize = 12,
+		AutoButtonColor = false,
+	}, side)
+	corner(b, 8)
+	local st = glowStroke(b, 1)
+	st.Enabled = false
+	tabBtns[name] = { btn = b, stroke = st }
+	b.Activated:Connect(function() selectTab(name) end)
+end
+
+-- tombol Hide
+local hideBtn = make("TextButton", {
+	AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 8, 1, -8), Size = UDim2.fromOffset(108, 28),
+	BackgroundColor3 = C.PANEL, BorderSizePixel = 0, Text = "Hide", TextColor3 = C.WHITE,
+	Font = Enum.Font.GothamBold, TextSize = 12, AutoButtonColor = false,
+}, side)
+corner(hideBtn, 8)
+glowStroke(hideBtn, 1)
+
+-- ---------- Komponen: switch card ----------
+local function makeSwitchCard(parent, name, size, pos, order)
+	local card = make("Frame", {
+		Size = size, Position = pos or UDim2.new(), LayoutOrder = order or 0,
+		BackgroundColor3 = C.PANEL, BorderSizePixel = 0,
+	}, parent)
+	corner(card, 8)
+	glowStroke(card, 1)
+
+	make("TextLabel", {
+		Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -64, 1, 0),
+		BackgroundTransparency = 1, Text = name, TextColor3 = C.WHITE,
+		Font = Enum.Font.GothamBold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left,
+	}, card)
+
+	local track = make("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
+		Size = UDim2.fromOffset(38, 20), BackgroundColor3 = C.OFF, BorderSizePixel = 0,
+	}, card)
+	corner(track, 10)
+	local knob = make("Frame", {
+		Position = UDim2.fromOffset(3, 3), Size = UDim2.fromOffset(14, 14),
+		BackgroundColor3 = C.WHITE, BorderSizePixel = 0,
+	}, track)
+	corner(knob, 7)
+
+	local overlay = make("TextButton", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", ZIndex = 5,
+	}, card)
+
+	local on = false
+	overlay.Activated:Connect(function()
+		on = not on
+		local info = TweenInfo.new(0.18, Enum.EasingStyle.Quad)
+		tween(knob, info, { Position = on and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3) })
+		tween(track, info, { BackgroundColor3 = on and C.RED or C.OFF })
+		local okc, err = pcall(UI.onToggle, name, on)
+		if not okc then warn("[Senar Hub] onToggle: " .. tostring(err)) end
+	end)
+	return card
+end
+
+-- ---------- Komponen: list ----------
+local function makeList(parent, size, pos)
+	local s = make("ScrollingFrame", {
+		Size = size, Position = pos or UDim2.new(),
+		BackgroundColor3 = C.SIDE, BackgroundTransparency = 0.25, BorderSizePixel = 0,
+		ScrollBarThickness = 3, ScrollBarImageColor3 = C.RED,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(),
+	}, parent)
+	corner(s, 8)
+	glowStroke(s, 1)
+	make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, s)
+	make("UIPadding", {
+		PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+		PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 8),
+	}, s)
+	return s
+end
+
+local function smallButton(parent, text, pos, dim)
+	local b = make("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5), Position = pos, Size = UDim2.fromOffset(48, 24),
+		BackgroundColor3 = dim and C.HOVER or C.PANEL, BorderSizePixel = 0,
+		Text = text, TextColor3 = dim and C.GRAY or C.WHITE,
+		Font = Enum.Font.GothamBold, TextSize = 10, AutoButtonColor = false,
+	}, parent)
+	corner(b, 6)
+	glowStroke(b, 1)
+	return b
+end
+
+---------------------------------------------------------------------
+-- HALAMAN: LOGS (Live Feed)
+---------------------------------------------------------------------
+do
+	local p = pages.Logs
+	makeSwitchCard(p, "Auto-Steal", UDim2.new(1, 0, 0, 38), UDim2.new(0, 0, 0, 0))
+
+	make("TextLabel", {
+		Position = UDim2.fromOffset(2, 46), Size = UDim2.fromOffset(100, 14),
+		BackgroundTransparency = 1, Text = "LIVE FEED", TextColor3 = C.GRAY,
+		Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+	}, p)
+
+	local clearBtn = make("TextButton", {
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -2, 0, 44), Size = UDim2.fromOffset(44, 16),
+		BackgroundTransparency = 1, Text = "Clear", TextColor3 = C.WHITE,
+		Font = Enum.Font.GothamBold, TextSize = 10,
+	}, p)
+
+	local list = makeList(p, UDim2.new(1, 0, 1, -64), UDim2.fromOffset(0, 64))
+
+	local counter = 0
+	UI.addLog = function(name, income, info)
+		counter += 1
+		local entry = {
+			name = tostring(name or "Item Name"),
+			income = tostring(income or "$0.0B/s"),
+			info = tostring(info or "0/5 · Rarity · 0:00"),
+		}
+
+		local card = make("Frame", {
+			LayoutOrder = -counter, Size = UDim2.new(1, 0, 0, 52),
+			BackgroundColor3 = C.PANEL, BorderSizePixel = 0,
+		}, list)
+		corner(card, 8)
+		glowStroke(card, 1)
+
+		make("Frame", {
+			Position = UDim2.fromOffset(8, 9), Size = UDim2.fromOffset(3, 34),
+			BackgroundColor3 = C.WHITE, BorderSizePixel = 0,
+		}, card)
+
+		local icon = make("Frame", {
+			Name = "RarityIcon",
+			Position = UDim2.fromOffset(18, 11), Size = UDim2.fromOffset(30, 30),
+			BackgroundColor3 = C.OFF, BorderSizePixel = 0,
+		}, card)
+		corner(icon, 15)
+
+		make("TextLabel", {
+			Position = UDim2.fromOffset(56, 8), Size = UDim2.new(1, -172, 0, 18),
+			BackgroundTransparency = 1, Text = string.format("%s [ %s ]", entry.name, entry.income),
+			TextColor3 = C.WHITE, Font = Enum.Font.GothamBold, TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		}, card)
+		make("TextLabel", {
+			Position = UDim2.fromOffset(56, 28), Size = UDim2.new(1, -172, 0, 14),
+			BackgroundTransparency = 1, Text = entry.info, TextColor3 = C.GRAY,
+			Font = Enum.Font.Gotham, TextSize = 10,
+			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		}, card)
+
+		local joinBtn = smallButton(card, "STEAL", UDim2.new(1, -62, 0.5, 0), false)
+		joinBtn.Name = "StealBtn"
+		local copyBtn = smallButton(card, "COPY", UDim2.new(1, -8, 0.5, 0), true)
+		joinBtn.Activated:Connect(function()
+			local okc, err = pcall(UI.onJoin, entry)
+			if not okc then warn("[Senar Hub] onJoin: " .. tostring(err)) end
+		end)
+		copyBtn.Activated:Connect(function()
+			if setclipboard then pcall(setclipboard, entry.name .. " " .. entry.income) end
+			local okc, err = pcall(UI.onCopy, entry)
+			if not okc then warn("[Senar Hub] onCopy: " .. tostring(err)) end
+		end)
+		return card, joinBtn, icon
+	end
+
+	UI.clearLogs = function()
+		for _, c in ipairs(list:GetChildren()) do
+			if c:IsA("Frame") then c:Destroy() end
+		end
+	end
+
+	clearBtn.Activated:Connect(function()
+		UI.clearLogs()
+		local okc, err = pcall(UI.onClear)
+		if not okc then warn("[Senar Hub] onClear: " .. tostring(err)) end
+	end)
+
+	local empty = make("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, LayoutOrder = 999999,
+		Text = "Scanning...", TextColor3 = C.GRAY, Font = Enum.Font.Gotham, TextSize = 11,
+	}, list)
+	UI.emptyLabel = empty
+end
+
+---------------------------------------------------------------------
+-- HALAMAN: HISTORY
+---------------------------------------------------------------------
+do
+	local p = pages.History
+	make("TextLabel", {
+		Position = UDim2.fromOffset(2, 0), Size = UDim2.fromOffset(100, 14),
+		BackgroundTransparency = 1, Text = "HISTORY", TextColor3 = C.GRAY,
+		Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+	}, p)
+	local list = makeList(p, UDim2.new(1, 0, 1, -20), UDim2.fromOffset(0, 20))
+	make("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1,
+		Text = "Belum ada riwayat", TextColor3 = C.GRAY,
+		Font = Enum.Font.Gotham, TextSize = 12,
+	}, list)
+end
+
+---------------------------------------------------------------------
+-- HALAMAN: SETTINGS
+---------------------------------------------------------------------
+do
+	local p = pages.Settings
+	make("TextLabel", {
+		Position = UDim2.fromOffset(2, 0), Size = UDim2.fromOffset(100, 14),
+		BackgroundTransparency = 1, Text = "SETTINGS", TextColor3 = C.GRAY,
+		Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+	}, p)
+	local list = makeList(p, UDim2.new(1, 0, 1, -20), UDim2.fromOffset(0, 20))
+	for i, name in ipairs({ "Notification", "Sound", "Auto Hide" }) do
+		makeSwitchCard(list, name, UDim2.new(1, 0, 0, 38), nil, i)
+	end
+end
+
+---------------------------------------------------------------------
+-- HALAMAN: SYSTEM KEY
+---------------------------------------------------------------------
+do
+	local p = pages["System Key"]
+	make("TextLabel", {
+		Position = UDim2.fromOffset(2, 0), Size = UDim2.fromOffset(100, 14),
+		BackgroundTransparency = 1, Text = "SYSTEM KEY", TextColor3 = C.GRAY,
+		Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+	}, p)
+
+	local box = make("TextBox", {
+		Position = UDim2.fromOffset(0, 24), Size = UDim2.new(1, 0, 0, 36),
+		BackgroundColor3 = C.PANEL, BorderSizePixel = 0, Text = "",
+		PlaceholderText = "Masukkan key...", PlaceholderColor3 = C.GRAY,
+		TextColor3 = C.WHITE, Font = Enum.Font.Gotham, TextSize = 12,
+		ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left,
+	}, p)
+	corner(box, 8)
+	glowStroke(box, 1)
+	make("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, box)
+
+	local verify = make("TextButton", {
+		Position = UDim2.fromOffset(0, 68), Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = C.RED, BorderSizePixel = 0, Text = "VERIFY",
+		TextColor3 = C.WHITE, Font = Enum.Font.GothamBold, TextSize = 12, AutoButtonColor = false,
+	}, p)
+	corner(verify, 8)
+	glowStroke(verify, 1, C.RED_DK)
+
+	local keyStatus = make("TextLabel", {
+		Position = UDim2.fromOffset(2, 110), Size = UDim2.new(1, 0, 0, 16),
+		BackgroundTransparency = 1, Text = "Belum diverifikasi", TextColor3 = C.GRAY,
+		Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
+	}, p)
+
+	verify.Activated:Connect(function()
+		keyStatus.Text = "Key dikirim"
+		local okc, err = pcall(UI.onKeySubmit, box.Text)
+		if not okc then warn("[Senar Hub] onKeySubmit: " .. tostring(err)) end
+	end)
+end
+
+selectTab("Logs")
+
+-- ---------- Kilatan cahaya (garis putih + hitam menyapu) ----------
+do
+	local streak = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(-60, H / 2),
+		Size = UDim2.fromOffset(14, H + 120), Rotation = 18,
+		BackgroundTransparency = 1, ZIndex = 50,
+	}, main)
+	make("Frame", {
+		Position = UDim2.fromOffset(2, 0), Size = UDim2.fromOffset(3, H + 120),
+		BackgroundColor3 = C.WHITE, BackgroundTransparency = 0.55, BorderSizePixel = 0, ZIndex = 50,
+	}, streak)
+	make("Frame", {
+		Position = UDim2.fromOffset(8, 0), Size = UDim2.fromOffset(5, H + 120),
+		BackgroundColor3 = C.BLACK, BackgroundTransparency = 0.5, BorderSizePixel = 0, ZIndex = 50,
+	}, streak)
+
+	local tw = TweenService:Create(streak,
+		TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, false, 2.5),
+		{ Position = UDim2.fromOffset(W + 60, H / 2) })
+	tw:Play()
+	table.insert(tweens, tw)
+end
+
+-- ---------- Buka / tutup ----------
+local opened = true
+local function setOpen(state)
+	opened = state
+	if state then
+		holder.Visible = true
+		popScale.Scale = 0.85
+		tween(popScale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 })
+	else
+		tween(popScale, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 0.85 })
+		task.delay(0.18, function()
+			if not opened and holder.Parent then holder.Visible = false end
+		end)
+	end
+end
+hideBtn.Activated:Connect(function() setOpen(false) end)
+
+-- ---------- Drag window (strip atas + area judul) ----------
+local function attachDrag(dragFrame)
+	local dragging, startMouse, startPos
+	table.insert(conns, dragFrame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging, startMouse, startPos = true, input.Position, holder.Position
+		end
+	end))
+	table.insert(conns, UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local d = (input.Position - startMouse) / fitScale.Scale
+			holder.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+				startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end))
+	table.insert(conns, UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end))
+end
+
+attachDrag(make("Frame", {
+	Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1, Active = true, ZIndex = 40,
+}, main))
+attachDrag(make("Frame", {
+	Position = UDim2.fromOffset(8, 24), Size = UDim2.fromOffset(124, 30),
+	BackgroundTransparency = 1, Active = true, ZIndex = 40,
+}, main))
+
+-- ---------- Floating icon ----------
+local iconBtn = make("TextButton", {
+	Name = "FloatingIcon", Position = UDim2.new(0, 16, 0.5, -26), Size = UDim2.fromOffset(52, 52),
+	BackgroundColor3 = C.BG, BorderSizePixel = 0, Text = "", AutoButtonColor = false, ZIndex = 60,
+}, gui)
+corner(iconBtn, 26)
+spinStroke(iconBtn, 2)
+
+local iconFallback = make("TextLabel", {
+	Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "S",
+	TextColor3 = C.RED, Font = Enum.Font.GothamBlack, TextSize = 24, ZIndex = 61,
+}, iconBtn)
+
+do
+	local img = make("ImageLabel", {
+		Position = UDim2.fromOffset(5, 5), Size = UDim2.new(1, -10, 1, -10),
+		BackgroundTransparency = 1, ScaleType = Enum.ScaleType.Fit,
+		Image = "rbxassetid://" .. tostring(ICON_ASSET_ID), Visible = false, ZIndex = 62,
+	}, iconBtn)
+	corner(img, 21)
+	task.spawn(function()
+		pcall(function()
+			ContentProvider:PreloadAsync({ img }, function(_, status)
+				if status == Enum.AssetFetchStatus.Success and img.Parent then
+					img.Visible = true
+					iconFallback.Text = ""
+				end
+			end)
+		end)
+	end)
+end
+
+-- icon bisa digeser; tap (tanpa geser) = buka/tutup
+do
+	local dragging, moved, startMouse, startPos
+	table.insert(conns, iconBtn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging, moved, startMouse, startPos = true, false, input.Position, iconBtn.Position
+		end
+	end))
+	table.insert(conns, UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local d = input.Position - startMouse
+			if d.Magnitude > 6 then moved = true end
+			if moved then
+				iconBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+					startPos.Y.Scale, startPos.Y.Offset + d.Y)
+			end
+		end
+	end))
+	table.insert(conns, UserInputService.InputEnded:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			dragging = false
+			if not moved then setOpen(not opened) end
+		end
+	end))
+end
+
+-- ---------- Animasi: balok bergerak + Hub rainbow ----------
+do
+	local t0 = os.clock()
+	local acc = 0
+	table.insert(conns, RunService.Heartbeat:Connect(function(dt)
+		if not holder.Visible then return end
+		local t = os.clock() - t0
+		local bw = blocks.width
+		for _, b in ipairs(blocks) do
+			b.frame.Size = UDim2.fromOffset(bw, b.base + math.sin(t * 2 + b.phase) * 3)
+		end
+		acc += dt
+		if acc >= 0.05 then
+			acc = 0
+			hubGrad.Color = rainbowSeq(t)
+		end
+	end))
+end
+
+-- ---------- Cleanup ----------
+gui.Destroying:Connect(function()
+	if env.__SenarCleanup == myCleanup then env.__SenarCleanup = nil end
+	if env.SenarUI == UI then env.SenarUI = nil end
+	table.clear(sweepGradients)
+	for _, c in ipairs(conns) do c:Disconnect() end
+	for _, t in ipairs(tweens) do pcall(function() t:Cancel() end) end
+end)
+
+-- ====== SISTEM STEAL + SCANNER (dibungkus pcall: error tampil di sidebar) ======
+local okSteal, errSteal = pcall(function()
+
 	local VirtualUser = game:GetService("VirtualUser")
 
 	-- ================= CONFIG =================
@@ -48,7 +787,7 @@ do
 		{ id = "epic",      en = "epic",      label = "Epic",      color = Color3.fromRGB(176, 90, 255),  img = icon(123367448940620) },
 		{ id = "legendary", en = "legendary", label = "Legendary", color = Color3.fromRGB(255, 170, 40),  img = icon(78792108393649) },
 		{ id = "mythical",  en = "mythic",    label = "Mythic",    color = Color3.fromRGB(255, 80, 80),   img = icon(90056520665549) },
-		{ id = "cosmic",    en = "cosmic",    label = "Cosmic",    color = Color3.fromRGB(110, 100, 255), img = nil },
+		{ id = "cosmic",    en = "cosmic",    label = "Cosmic",    color = Color3.fromRGB(110, 100, 255), img = icon(5405285409) },
 		{ id = "secret",    en = "secret",    label = "Secret",    color = Color3.fromRGB(255, 50, 150),  img = icon(121324558664992) },
 		{ id = "eternal",   en = "eternal",   label = "Eternal",   color = Color3.fromRGB(0, 229, 255),   img = icon(133625388915961) },
 		{ id = "divine",    en = "divine",    label = "Divine",    color = Color3.fromRGB(255, 215, 0),   img = icon(96042806356330) },
@@ -482,32 +1221,34 @@ do
 		local income = e.income and (fmtNum(e.income) .. "/s") or "?/s"
 		local info = string.format("%s · %s · %d stud",
 			r and r.label or "?", e.weight and string.format("%.2fkg", e.weight) or "-kg", math.floor(e.dist or 0))
-		local card = origAddLog((e.spooky and "Spooky " or "") .. e.name, income, info)
+		local card, stealBtn, iconFrame = origAddLog((e.spooky and "Spooky " or "") .. e.name, income, info)
 		if not card then return end
-
-		for _, c in ipairs(card:GetChildren()) do
-			if c:IsA("Frame") and c.Size == UDim2.fromOffset(30, 30) then
-				if r then c.BackgroundColor3 = r.color end
-				if r and r.img then
-					local im = make("ImageLabel", {
-						Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-						Image = r.img, ScaleType = Enum.ScaleType.Fit,
-					}, c)
-					corner(im, 15)
-				end
-			elseif c:IsA("TextButton") and c.Text == "JOIN" then
-				c.Text = "STEAL"
-				c.Activated:Connect(function()
-					if S.busy then setStatus("masih sibuk") return end
-					task.spawn(stealEntry, e, true)
-				end)
+		if iconFrame then
+			if r then iconFrame.BackgroundColor3 = r.color end
+			if r and r.img then
+				local im = make("ImageLabel", {
+					Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+					Image = r.img, ScaleType = Enum.ScaleType.Fit,
+				}, iconFrame)
+				corner(im, 15)
 			end
+		end
+		if stealBtn then
+			-- handler lama (UI.onJoin) tetap noop; pakai handler langsung
+			stealBtn.Activated:Connect(function()
+				if S.busy then setStatus("masih sibuk") return end
+				task.spawn(stealEntry, e, true)
+			end)
 		end
 	end
 
 	local function pushList(shown)
 		UI.clearLogs()
 		for i = #shown, 1, -1 do addEntry(shown[i]) end
+		if UI.emptyLabel then
+			UI.emptyLabel.Visible = (#shown == 0)
+			UI.emptyLabel.Text = "Belum ada kandang terdeteksi"
+		end
 	end
 
 	local function scanNow()
@@ -715,11 +1456,7 @@ do
 		end
 	end)
 
-	-- ================= UI: LOGS (rename + Cancel Steal) =================
-	for _, d in ipairs(pages.Logs:GetDescendants()) do
-		if d:IsA("TextLabel") and d.Text == "Auto-Join" then d.Text = "Auto-Steal" end
-	end
-
+	-- ================= UI: Cancel Steal =================
 	do
 		local cancelBtn = make("TextButton", {
 			Position = UDim2.fromOffset(108, 43), Size = UDim2.fromOffset(100, 18),
@@ -742,30 +1479,6 @@ do
 
 	-- ================= UI: TAB SCANNER =================
 	do
-		pages.Scanner = make("Frame", {
-			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false,
-		}, content)
-
-		local b = make("TextButton", {
-			Size = UDim2.fromOffset(108, 27), BackgroundColor3 = C.HOVER, BackgroundTransparency = 1,
-			BorderSizePixel = 0, Text = "Scanner", TextColor3 = C.GRAY,
-			Font = Enum.Font.GothamBold, TextSize = 12, AutoButtonColor = false,
-		}, side)
-		corner(b, 8)
-		local st = glowStroke(b, 1)
-		st.Enabled = false
-		tabBtns.Scanner = { btn = b, stroke = st }
-		b.Activated:Connect(function() selectTab("Scanner") end)
-
-		-- susun ulang tab (muat 5 tombol di atas Hide)
-		for i, n in ipairs({ "Logs", "Scanner", "History", "Settings", "System Key" }) do
-			local t = tabBtns[n]
-			if t then
-				t.btn.Position = UDim2.fromOffset(8, 58 + (i - 1) * 31)
-				t.btn.Size = UDim2.fromOffset(108, 27)
-			end
-		end
-
 		make("TextLabel", {
 			Position = UDim2.fromOffset(2, 0), Size = UDim2.fromOffset(100, 14),
 			BackgroundTransparency = 1, Text = "SCANNER", TextColor3 = C.GRAY,
@@ -896,7 +1609,7 @@ do
 	-- ================= HOOK TOGGLE =================
 	local prevToggle = UI.onToggle
 	UI.onToggle = function(name, state)
-		if name == "Auto-Join" then -- sekarang berfungsi sebagai Auto-Steal
+		if name == "Auto-Steal" then
 			S.running = state
 			if state then
 				S.cancel = false
@@ -924,4 +1637,8 @@ do
 
 	statusLbl.TextTruncate = Enum.TextTruncate.AtEnd
 	statusLbl.TextSize = 10
+end)
+if not okSteal then
+	warn("[Senar Hub] ERROR: " .. tostring(errSteal))
+	UI.setStatus("ERR: " .. tostring(errSteal):sub(1, 60))
 end
